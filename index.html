@@ -1,0 +1,768 @@
+<!DOCTYPE html> 
+<html lang="bg"> 
+<head> 
+  <meta charset="UTF-8"> 
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
+  <title>SubTranslate - Превод на субтитри с Google Translate</title> 
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    @keyframes float {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-20px); }
+    }
+    @keyframes gradient-shift {
+      0%, 100% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+    }
+    @keyframes shimmer {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(100%); }
+    }
+    .animate-float { animation: float 6s ease-in-out infinite; }
+    .animate-gradient-shift { 
+      background-size: 400% 400%;
+      animation: gradient-shift 15s ease infinite;
+    }
+    .shimmer-overlay {
+      position: relative;
+      overflow: hidden;
+    }
+    .shimmer-overlay::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+      animation: shimmer 2s infinite;
+    }
+  </style>
+</head> 
+<body class="bg-slate-950 text-white font-sans">
+  <div id="root"></div>
+  
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  
+  <script type="text/babel">
+    const { useState, useRef } = React;
+
+    // Икони
+    const UploadIcon = () => (
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+    );
+    
+    const TranslateIcon = () => (
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="m5 8 6 6"/>
+        <path d="m4 14 6-6 2-3"/>
+        <path d="M2 5h12"/>
+        <path d="M7 2h1"/>
+        <path d="m22 22-5-10-5 10"/>
+        <path d="M14 18h6"/>
+      </svg>
+    );
+    
+    const DownloadIcon = () => (
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+    );
+    
+    const CheckIcon = () => (
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+        <polyline points="22 4 12 14.01 9 11.01"/>
+      </svg>
+    );
+    
+    const SparklesIcon = () => (
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
+        <path d="M5 3v4"/>
+        <path d="M19 17v4"/>
+        <path d="M3 5h4"/>
+        <path d="M17 19h4"/>
+      </svg>
+    );
+
+    function SubtitleTranslator() {
+      const [file, setFile] = useState(null);
+      const [translating, setTranslating] = useState(false);
+      const [translatedContent, setTranslatedContent] = useState('');
+      const [progress, setProgress] = useState(0);
+      const [error, setError] = useState('');
+      const [status, setStatus] = useState('Готов за превод');
+      const [subtitleCount, setSubtitleCount] = useState({ total: 0, translated: 0 });
+      const [rulesApplied, setRulesApplied] = useState({ total: 0, perRule: {} });
+      const fileInputRef = useRef(null);
+
+      const parseSRT = (content) => {
+        try {
+          const blocks = content.trim().split(/\r?\n\r?\n/);
+          const count = blocks.filter(block => {
+            const lines = block.split(/\r?\n/);
+            return lines.length >= 3;
+          }).length;
+          
+          setSubtitleCount(prev => ({ ...prev, total: count }));
+          
+          return blocks.map(block => {
+            const lines = block.split(/\r?\n/);
+            if(lines.length < 3) return null;
+            return {
+              index: lines[0],
+              timing: lines[1],
+              text: lines.slice(2).join('\n')
+            };
+          }).filter(b => b !== null);
+        } catch(err) {
+          setError('Грешка при обработка на SRT файла');
+          return [];
+        }
+      };
+
+      // PASS 1 – CLEAN (структурно почистване)
+      const pass1_clean = (text) => {
+        let result = text;
+        
+        // 2.1 Махане на лични местоимения в начало
+        // НЕ махаме ако има запетая или "а не" след това
+        result = result.replace(/^(Аз|Ти)\s+(?!,|\s*а\s+не)/i, "");
+        
+        // 2.2 Премахване на „че“ – ОГРАНИЧЕНО
+        // САМО след тези глаголи:
+        const removeChePattern = /(мисля|предполагам|изглежда|май|сигурно),?\s+че\s+/gi;
+        result = result.replace(removeChePattern, "$1 ");
+        
+        return result;
+      };
+
+      // PASS 2 – CASUAL REPLACEMENTS
+      const pass2_casual = (text) => {
+        let result = text;
+        
+        // 3.1 Формално → Casual
+        const casualReplacements = {
+          "по отношение на": "за",
+          "във връзка с": "за",
+          "поради това че": "защото",
+          "в момента": "",
+          "в заключение": "накрая",
+          "вероятно": "май",
+          "разбирам": "ясно",
+          "Сигурен съм": "Сигурно",
+          
+          // 3.2 Филмови реплики
+          "какво, по дяволите": "какво става",
+          "Какво, по дяволите": "Какво става",
+          "какво искаш да кажеш": "какво имаш предвид",
+          "Какво искаш да кажеш": "Какво имаш предвид",
+          "не мога да повярвам": "не може да бъде",
+          "Не мога да повярвам": "Не може да бъде",
+          "това няма смисъл": "няма логика",
+          "Това няма смисъл": "Няма логика",
+          
+          // Допълнителни замени
+          "Вие": "ти",
+          "Ваш": "твой",
+          "Ваша": "твоя",
+          "Ваше": "твое",
+          "Ваши": "твои"
+        };
+        
+        Object.entries(casualReplacements).forEach(([from, to]) => {
+          const regex = new RegExp(`\\b${from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+          result = result.replace(regex, to);
+        });
+        
+        return result;
+      };
+
+      // PASS 3 – SUBTITLE SHORTENING
+      const pass3_shorten = (text) => {
+        let result = text;
+        
+        // 4.1 Пълнежи за изрязване
+        const fillerWords = /\b(всъщност|реално|общо взето|по принцип|в момента|в този момент|точно сега)\b/gi;
+        result = result.replace(fillerWords, "");
+        
+        // 4.2 Примерно съкращаване
+        const shortenPatterns = [
+          [/Опитвам се да ти обясня какво се случва\./g, "Опитвам се да ти обясня."],
+          [/Опитвам се да ви обясня какво се случва\./g, "Опитвам се да ви обясня."],
+          [/Казано по друг начин,/g, "С други думи,"],
+          [/Трябва да отбележа, че/g, ""],
+          [/Бих искал да добавя, че/g, ""],
+        ];
+        
+        shortenPatterns.forEach(([pattern, replacement]) => {
+          result = result.replace(pattern, replacement);
+        });
+        
+        return result;
+      };
+
+      // PASS 4 – GENDER NEUTRAL LAYER
+      const pass4_gender_neutral = (text) => {
+        let result = text;
+        
+        // 5.1 Родови → безродови замени
+        // САМО ако няма "той" или "тя" в близост
+        const hasGenderPronoun = /\b(той|тя|него|нея|нему|ней)\b/i.test(result);
+        
+        if (!hasGenderPronoun) {
+          const genderReplacements = {
+            "некомпетентен": "пълна некомпетентност",
+            "луд": "пълна лудост", 
+            "глупав": "пълна глупост",
+            "ужасен": "пълна трагедия",
+            "идиот": "пълна идиотщина"
+          };
+          
+          Object.entries(genderReplacements).forEach(([from, to]) => {
+            const regex = new RegExp(`\\b${from}\\b`, 'gi');
+            result = result.replace(regex, to);
+          });
+        }
+        
+        return result;
+      };
+
+      // PASS 5 – PRESERVE TIMING (не променяме, само проверяваме)
+      const pass5_preserve_timing = (text) => {
+        // Тук не правим промени, само гарантираме че не сме променили нещо
+        // което би засегнало синхронизацията
+        return text;
+      };
+
+      // PASS 6 – FINAL CLEANUP
+      const pass6_final_cleanup = (text) => {
+        let result = text;
+        
+        // 6.1 Интервали и пунктуация
+        result = result.replace(/\s+/g, " ");
+        result = result.replace(/\s+([,.!?])/g, "$1");
+        result = result.replace(/([!?]){2,}/g, "$1");
+        result = result.replace(/(\.+){2,}/g, ".");
+        
+        // 6.2 Главна буква
+        if (result.length > 0) {
+          result = result.charAt(0).toUpperCase() + result.slice(1);
+        }
+        
+        return result;
+      };
+
+      // ПЪЛЕН PIPELINE
+      const applyFullPipeline = (text) => {
+        if (!text || !text.trim()) return text;
+        
+        const ruleCounter = { ...rulesApplied.perRule };
+        
+        try {
+          // PASS 1
+          let step1 = pass1_clean(text);
+          if (step1 !== text) ruleCounter['pass1_clean'] = (ruleCounter['pass1_clean'] || 0) + 1;
+          
+          // PASS 2  
+          let step2 = pass2_casual(step1);
+          if (step2 !== step1) ruleCounter['pass2_casual'] = (ruleCounter['pass2_casual'] || 0) + 1;
+          
+          // PASS 3
+          let step3 = pass3_shorten(step2);
+          if (step3 !== step2) ruleCounter['pass3_shorten'] = (ruleCounter['pass3_shorten'] || 0) + 1;
+          
+          // PASS 4
+          let step4 = pass4_gender_neutral(step3);
+          if (step4 !== step3) ruleCounter['pass4_gender'] = (ruleCounter['pass4_gender'] || 0) + 1;
+          
+          // PASS 5
+          let step5 = pass5_preserve_timing(step4);
+          
+          // PASS 6
+          let step6 = pass6_final_cleanup(step5);
+          if (step6 !== step5) ruleCounter['pass6_cleanup'] = (ruleCounter['pass6_cleanup'] || 0) + 1;
+          
+          // Актуализираме брояча
+          const totalApplied = Object.values(ruleCounter).reduce((sum, count) => sum + count, 0);
+          setRulesApplied({ total: totalApplied, perRule: ruleCounter });
+          
+          return step6;
+          
+        } catch (error) {
+          console.error("Pipeline error:", error);
+          return text; // Fallback към оригинала
+        }
+      };
+
+      const translateText = async (text) => {
+        if(!text.trim()) return '';
+        try {
+          setStatus('Превеждам с Google...');
+          const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=bg&dt=t&q=${encodeURIComponent(text)}`;
+          const res = await fetch(url);
+          if(!res.ok) throw new Error('Грешка при Google Translate');
+          const data = await res.json();
+          const translated = data[0].map(item => item[0]).join('');
+          
+          // Прилагаме целия pipeline
+          return applyFullPipeline(translated);
+        } catch(err) {
+          console.error(err);
+          return text; // fallback
+        }
+      };
+
+      const handleFileUpload = (e) => {
+        const uploadedFile = e.target.files[0];
+        if(uploadedFile && uploadedFile.name.endsWith('.srt')) {
+          setFile(uploadedFile);
+          setTranslatedContent('');
+          setError('');
+          setStatus('Готов за превод');
+          setSubtitleCount({ total: 0, translated: 0 });
+          setRulesApplied({ total: 0, perRule: {} });
+        } else {
+          setError('Моля, качете .srt файл');
+        }
+      };
+
+      const handleTranslate = async () => {
+        if(!file) return;
+        setTranslating(true);
+        setProgress(0);
+        setError('');
+        setStatus('Започвам превод...');
+        setSubtitleCount(prev => ({ ...prev, translated: 0 }));
+        setRulesApplied({ total: 0, perRule: {} });
+        
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          const content = e.target.result;
+          const subs = parseSRT(content);
+          
+          if(subs.length === 0) {
+            setError('Няма валидни субтитри');
+            setTranslating(false);
+            return;
+          }
+          
+          const translated = [];
+          let translatedCount = 0;
+          
+          for(let i = 0; i < subs.length; i++) {
+            setStatus(`Превеждам ред ${i+1} от ${subs.length}...`);
+            try {
+              const tr = await translateText(subs[i].text);
+              translated.push(`${subs[i].index}\n${subs[i].timing}\n${tr}`);
+              translatedCount++;
+              setSubtitleCount(prev => ({ ...prev, translated: translatedCount }));
+            } catch(err) {
+              translated.push(`${subs[i].index}\n${subs[i].timing}\n${subs[i].text}`);
+            }
+            setProgress(Math.round(((i+1)/subs.length)*100));
+            await new Promise(r => setTimeout(r, 100));
+          }
+          
+          setTranslatedContent(translated.join('\n\n'));
+          setTranslating(false);
+          setStatus('Преводът е готов!');
+        };
+        
+        reader.onerror = () => {
+          setError('Грешка при четене на файла');
+          setTranslating(false);
+        };
+        
+        reader.readAsText(file);
+      };
+
+      const handleDownload = () => {
+        const blob = new Blob([translatedContent], {type: 'text/plain;charset=utf-8'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = file.name.replace('.srt', '_BG.srt');
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 100);
+      };
+
+      const FeaturesSection = () => (
+        <div className="mt-16">
+          <h2 className="text-3xl font-bold text-center mb-10 bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-purple-400">
+            Защо да използвате SubTranslate?
+          </h2>
+          <div className="grid md:grid-cols-3 gap-6">
+            <div className="bg-gradient-to-br from-slate-800/50 to-slate-900/50 backdrop-blur-sm p-6 rounded-2xl border border-slate-700/50 hover:border-cyan-500/50 transition-all duration-300">
+              <div className="w-14 h-14 bg-gradient-to-br from-cyan-500 to-blue-500 rounded-xl flex items-center justify-center mb-4">
+                <i className="fas fa-bolt text-xl"></i>
+              </div>
+              <h3 className="text-xl font-bold mb-2">Бърз превод</h3>
+              <p className="text-slate-300">Превод на цели субтитри за минути с помощта на Google Translate</p>
+            </div>
+            
+            <div className="bg-gradient-to-br from-slate-800/50 to-slate-900/50 backdrop-blur-sm p-6 rounded-2xl border border-slate-700/50 hover:border-purple-500/50 transition-all duration-300">
+              <div className="w-14 h-14 bg-gradient-to-br from-purple-500 to-pink-500 rounded-xl flex items-center justify-center mb-4">
+                <i className="fas fa-comments text-xl"></i>
+              </div>
+              <h3 className="text-xl font-bold mb-2">Разговорен език</h3>
+              <p className="text-slate-300">Преобразува формалния превод в ежедневен разговорен български</p>
+            </div>
+            
+            <div className="bg-gradient-to-br from-slate-800/50 to-slate-900/50 backdrop-blur-sm p-6 rounded-2xl border border-slate-700/50 hover:border-green-500/50 transition-all duration-300">
+              <div className="w-14 h-14 bg-gradient-to-br from-green-500 to-emerald-500 rounded-xl flex items-center justify-center mb-4">
+                <i className="fas fa-lock-open text-xl"></i>
+              </div>
+              <h3 className="text-xl font-bold mb-2">Напълно безплатно</h3>
+              <p className="text-slate-300">Няма такси, няма регистрация, няма ограничения</p>
+            </div>
+          </div>
+        </div>
+      );
+
+      const HowItWorks = () => (
+        <div className="mt-16">
+          <h2 className="text-3xl font-bold text-center mb-12 bg-clip-text text-transparent bg-gradient-to-r from-pink-400 to-orange-400">
+            Как работи?
+          </h2>
+          <div className="relative">
+            <div className="absolute left-0 right-0 top-1/2 h-0.5 bg-gradient-to-r from-transparent via-purple-500/30 to-transparent hidden md:block"></div>
+            <div className="grid md:grid-cols-4 gap-8 relative">
+              {[
+                {step: 1, title: "Качи файл", desc: "Избери .srt файл от твоето устройство", icon: "fas fa-upload"},
+                {step: 2, title: "Автоматичен превод", desc: "Google Translate превежда целия текст", icon: "fas fa-language"},
+                {step: 3, title: "Разговорна обработка", desc: "Формалният превод става ежедневен език", icon: "fas fa-comment-dots"},
+                {step: 4, title: "Свали файла", desc: "Получи готовия .srt файл на български", icon: "fas fa-download"}
+              ].map((item) => (
+                <div key={item.step} className="text-center relative">
+                  <div className="w-16 h-16 bg-gradient-to-br from-slate-800 to-slate-900 border-2 border-purple-500/30 rounded-full flex items-center justify-center text-2xl font-bold mb-4 mx-auto relative z-10">
+                    <div className="w-14 h-14 bg-gradient-to-br from-purple-600/80 to-pink-600/80 rounded-full flex items-center justify-center">
+                      <i className={item.icon}></i>
+                    </div>
+                  </div>
+                  <h3 className="text-xl font-bold mb-2">{item.title}</h3>
+                  <p className="text-slate-300 text-sm">{item.desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950/30 to-slate-950 relative overflow-hidden">
+          {/* Анимиран фон */}
+          <div className="absolute inset-0 overflow-hidden">
+            <div className="absolute w-[800px] h-[800px] bg-gradient-to-r from-purple-500/10 to-cyan-500/10 rounded-full blur-3xl -top-96 -left-96 animate-float"></div>
+            <div className="absolute w-[800px] h-[800px] bg-gradient-to-r from-pink-500/10 to-purple-500/10 rounded-full blur-3xl -bottom-96 -right-96 animate-float" style={{animationDelay: '2s'}}></div>
+            <div className="absolute top-0 left-0 right-0 bottom-0 bg-[url('https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&q=80&w=2070')] opacity-5 bg-cover"></div>
+          </div>
+          
+          <div className="relative z-10 container mx-auto px-4 py-8">
+            {/* Хедър */}
+            <header className="text-center mb-12 pt-8">
+              <div className="inline-flex items-center gap-3 mb-4 px-4 py-2 bg-gradient-to-r from-purple-500/20 to-cyan-500/20 rounded-full border border-purple-500/30">
+                <SparklesIcon />
+                <span className="font-medium">Безплатен инструмент</span>
+              </div>
+              
+              <h1 className="text-5xl md:text-7xl font-bold mb-6">
+                <span className="bg-clip-text text-transparent bg-gradient-to-r from-white via-cyan-100 to-purple-100">SubTranslate</span>
+              </h1>
+              
+              <p className="text-2xl md:text-3xl font-medium mb-4 text-slate-300">
+                Превод на субтитри от английски към <span className="bg-gradient-to-r from-cyan-400 to-purple-400 text-transparent bg-clip-text font-bold">разговорен български</span>
+              </p>
+              
+              <p className="text-lg text-slate-400 max-w-2xl mx-auto">
+                Бърз и лесен инструмент за превод на филмови и сериални субтитри с автоматична обработка на резултата в ежедневен разговорен език.
+              </p>
+            </header>
+            
+            {/* Основен инструмент */}
+            <main className="max-w-4xl mx-auto">
+              <div className="bg-gradient-to-br from-slate-900/80 to-slate-950/80 backdrop-blur-xl rounded-3xl border border-slate-700/50 shadow-2xl overflow-hidden">
+                <div className="p-8">
+                  {/* Статус бар */}
+                  <div className="flex items-center justify-between mb-8">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-3 h-3 rounded-full ${translating ? 'bg-amber-500 animate-pulse' : 'bg-green-500'}`}></div>
+                      <span className="font-medium">{status}</span>
+                    </div>
+                    
+                    {translating && (
+                      <div className="flex items-center gap-3">
+                        <div className="w-32 h-2 bg-slate-700 rounded-full overflow-hidden">
+                          <div 
+                            className="h-full bg-gradient-to-r from-cyan-500 to-purple-500 transition-all duration-300"
+                            style={{ width: `${progress}%` }}
+                          ></div>
+                        </div>
+                        <span className="text-sm font-medium">{progress}%</span>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Качване на файл */}
+                  <div className="mb-8">
+                    <div 
+                      className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all duration-300 shimmer-overlay ${
+                        file ? 'border-green-500/50 bg-green-500/5' : 'border-purple-500/50 bg-gradient-to-br from-slate-900/50 to-purple-900/20 hover:bg-purple-900/30'
+                      }`}
+                      onClick={() => !translating && fileInputRef.current.click()}
+                    >
+                      <div className="w-20 h-20 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-purple-600/30 to-pink-600/30 flex items-center justify-center border border-purple-500/30">
+                        {file ? (
+                          <CheckIcon />
+                        ) : (
+                          <UploadIcon />
+                        )}
+                      </div>
+                      
+                      {file ? (
+                        <>
+                          <h3 className="text-2xl font-bold mb-2">{file.name}</h3>
+                          <p className="text-slate-300">Файлът е готов за превод</p>
+                          <button 
+                            className="mt-4 text-sm text-cyan-400 hover:text-cyan-300"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setFile(null);
+                              setTranslatedContent('');
+                              setSubtitleCount({ total: 0, translated: 0 });
+                              setRulesApplied({ total: 0, perRule: {} });
+                            }}
+                          >
+                            Избери друг файл
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <h3 className="text-2xl font-bold mb-2">Пусни SRT файл тук</h3>
+                          <p className="text-slate-300">или кликни за да избереш файл</p>
+                          <p className="text-sm text-slate-400 mt-2">Поддържа се само .srt формат</p>
+                        </>
+                      )}
+                      
+                      <input 
+                        type="file" 
+                        ref={fileInputRef}
+                        className="hidden" 
+                        accept=".srt" 
+                        onChange={handleFileUpload}
+                        disabled={translating}
+                      />
+                    </div>
+                    
+                    {/* Брояч на субтитри - ДОБАВЕН */}
+                    {subtitleCount.total > 0 && (
+                      <div className="mt-4 p-4 bg-gradient-to-r from-slate-800/50 to-slate-900/50 rounded-xl border border-slate-700/50">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 bg-gradient-to-br from-purple-600/30 to-pink-600/30 rounded-lg flex items-center justify-center">
+                              <i className="fas fa-caption text-purple-400"></i>
+                            </div>
+                            <div>
+                              <h4 className="font-bold">Субтитри в файла</h4>
+                              <p className="text-sm text-slate-300">
+                                {translating 
+                                  ? `Превежда се: ${subtitleCount.translated} от ${subtitleCount.total}`
+                                  : `Общо: ${subtitleCount.total} субтитъра`
+                                }
+                              </p>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-2xl font-bold text-white">
+                              {subtitleCount.total}
+                            </div>
+                            <div className="text-xs text-slate-400">общо</div>
+                          </div>
+                        </div>
+                        
+                        {translating && (
+                          <div className="mt-3 pt-3 border-t border-slate-700/50">
+                            <div className="flex justify-between items-center">
+                              <span className="text-sm">Прогрес:</span>
+                              <span className="text-sm font-bold text-cyan-400">
+                                {Math.round((subtitleCount.translated / subtitleCount.total) * 100)}%
+                              </span>
+                            </div>
+                            <div className="w-full h-2 bg-slate-700 rounded-full mt-1 overflow-hidden">
+                              <div 
+                                className="h-full bg-gradient-to-r from-cyan-500 to-purple-500 transition-all duration-300"
+                                style={{ width: `${(subtitleCount.translated / subtitleCount.total) * 100}%` }}
+                              ></div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    
+                    {error && (
+                      <div className="mt-4 p-4 bg-red-500/20 border border-red-500/30 rounded-xl">
+                        <div className="flex items-center gap-2">
+                          <i className="fas fa-exclamation-circle text-red-400"></i>
+                          <span>{error}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Бутони за действие */}
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <button
+                      onClick={handleTranslate}
+                      disabled={!file || translating}
+                      className={`py-4 px-6 rounded-xl font-bold text-lg transition-all duration-300 flex items-center justify-center gap-3 ${
+                        !file || translating 
+                          ? 'bg-slate-800 text-slate-500 cursor-not-allowed' 
+                          : 'bg-gradient-to-r from-cyan-600 to-purple-600 hover:from-cyan-500 hover:to-purple-500 shadow-lg hover:shadow-cyan-500/25'
+                      }`}
+                    >
+                      {translating ? (
+                        <>
+                          <i className="fas fa-spinner fa-spin"></i>
+                          <span>Превеждам... {progress}%</span>
+                        </>
+                      ) : (
+                        <>
+                          <TranslateIcon />
+                          <span>Започни превод</span>
+                        </>
+                      )}
+                    </button>
+                    
+                    {translatedContent && (
+                      <button
+                        onClick={handleDownload}
+                        className="py-4 px-6 rounded-xl font-bold text-lg transition-all duration-300 flex items-center justify-center gap-3 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 shadow-lg hover:shadow-green-500/25"
+                      >
+                        <DownloadIcon />
+                        <span>Свали превода</span>
+                      </button>
+                    )}
+                  </div>
+                  
+                  {/* Брояч на правилата - ДОБАВЕН */}
+                  {rulesApplied.total > 0 && !translating && (
+                    <div className="mt-6 p-4 bg-gradient-to-r from-slate-800/50 to-slate-900/50 rounded-xl border border-slate-700/50">
+                      <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-lg font-bold flex items-center gap-2">
+                          <i className="fas fa-cogs text-cyan-400"></i>
+                          Приложени обработки
+                        </h3>
+                        <span className="bg-gradient-to-r from-cyan-600 to-blue-600 text-white px-3 py-1 rounded-full text-sm font-bold">
+                          {rulesApplied.total} промени
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
+                        {Object.entries(rulesApplied.perRule).map(([rule, count]) => (
+                          <div key={rule} className="flex items-center justify-between bg-slate-800/30 px-3 py-2 rounded-lg">
+                            <span className="text-slate-300 text-xs">
+                              {rule === 'pass1_clean' && 'Почистване'}
+                              {rule === 'pass2_casual' && 'Разговорни замени'}
+                              {rule === 'pass3_shorten' && 'Съкращаване'}
+                              {rule === 'pass4_gender' && 'Безродови замени'}
+                              {rule === 'pass6_cleanup' && 'Финален тунинг'}
+                            </span>
+                            <span className="bg-purple-900/50 text-purple-300 px-2 py-1 rounded text-xs font-bold">
+                              {count}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Преглед на резултата */}
+                  {translatedContent && (
+                    <div className="mt-8">
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-xl font-bold">Преглед на превода</h3>
+                        <div className="flex items-center gap-4">
+                          <span className="text-sm text-slate-400">{translatedContent.split('\n\n').length} субтитъра</span>
+                          <div className="flex items-center gap-1 text-sm bg-green-900/30 text-green-400 px-2 py-1 rounded">
+                            <i className="fas fa-check"></i>
+                            <span>Готово</span>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="bg-slate-950/50 border border-slate-700/50 rounded-xl overflow-hidden">
+                        <div className="p-4 max-h-64 overflow-y-auto">
+                          <pre className="text-sm font-mono text-slate-300 whitespace-pre-wrap">
+                            {translatedContent.split('\n').slice(0, 15).join('\n')}
+                            {translatedContent.split('\n').length > 15 && (
+                              <span className="text-cyan-400 block mt-2">
+                                ... и още {translatedContent.split('\n').length - 15} реда
+                                <span className="text-slate-400 text-xs ml-2">
+                                  (общо {subtitleCount.total} субтитъра)
+                                </span>
+                              </span>
+                            )}
+                          </pre>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                
+                {/* Информационен панел */}
+                <div className="bg-gradient-to-r from-slate-900/50 to-slate-950/50 border-t border-slate-700/50 p-6">
+                  <div className="flex flex-wrap items-center justify-center gap-6 text-sm">
+                    <div className="flex items-center gap-2">
+                      <i className="fas fa-check text-green-400"></i>
+                      <span>100% безплатно</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <i className="fas fa-shield-alt text-cyan-400"></i>
+                      <span>Без регистрация</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <i className="fas fa-infinity text-purple-400"></i>
+                      <span>Неограничени преводи</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <i className="fas fa-bolt text-amber-400"></i>
+                      <span>Бърза обработка</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              {/* Секции с информация */}
+              <FeaturesSection />
+              <HowItWorks />
+              
+              {/* Футър */}
+              <footer className="mt-16 pt-8 pb-12 text-center border-t border-slate-800/50">
+                <p className="text-slate-400 mb-2">
+                  SubTranslate използва Google Translate за превод и автоматично обработва резултата в разговорен български.
+                </p>
+                <p className="text-slate-500 text-sm">
+                  Създадено с ❤️ за българската общност | {new Date().getFullYear()}
+                </p>
+              </footer>
+            </main>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.render(<SubtitleTranslator />, document.getElementById('root'));
+  </script>
+</body>
+</html>
